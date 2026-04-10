@@ -1,0 +1,54 @@
+services:
+  derper:
+    build:
+      context: .
+      target: runtime
+      args:
+        TS_VERSION: ${TS_VERSION:-v1.96.4}
+    image: ${DERPER_IMAGE:-ts-derper-stack:dev}
+    container_name: ts-derper
+    restart: unless-stopped
+    environment:
+      DERP_ADDR: ${DERP_ADDR:-:3340}
+      DERP_HTTP_PORT: ${DERP_HTTP_PORT:--1}
+      DERP_STUN_PORT: ${DERP_STUN_PORT:-3478}
+      DERP_AUTH_MODE: ${DERP_AUTH_MODE:-none}
+      DERP_VERIFY_CLIENT_URL: ${DERP_VERIFY_CLIENT_URL:-http://verify-mock:8080/verify}
+      DERP_VERIFY_CLIENT_URL_FAIL_OPEN: ${DERP_VERIFY_CLIENT_URL_FAIL_OPEN:-true}
+      DERP_CERT_MODE: ${DERP_CERT_MODE:-letsencrypt}
+      DERP_HOSTNAME: ${DERP_HOSTNAME:-}
+      DERP_EXTRA_ARGS: ${DERP_EXTRA_ARGS:-}
+      TAILSCALED_RUN: ${TAILSCALED_RUN:-false}
+      TAILSCALE_AUTH_KEY: ${TAILSCALE_AUTH_KEY:-}
+      TAILSCALE_LOGIN_SERVER: ${TAILSCALE_LOGIN_SERVER:-}
+      TAILSCALE_HOSTNAME: ${TAILSCALE_HOSTNAME:-}
+      TAILSCALE_UP_EXTRA_ARGS: ${TAILSCALE_UP_EXTRA_ARGS:-}
+      TAILSCALED_EXTRA_ARGS: ${TAILSCALED_EXTRA_ARGS:-}
+    ports:
+      - "${HOST_DERP_TCP_PORT:-3340}:${HOST_DERP_CONTAINER_PORT:-3340}/tcp"
+      - "${HOST_STUN_PORT:-3478}:${DERP_STUN_PORT:-3478}/udp"
+    volumes:
+      - ./compose-data/derper:/var/lib/derper
+      - ./compose-data/tailscale:/var/lib/tailscale
+      - ./compose-data/certs:/var/cache/derper-certs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${HOST_DERP_CONTAINER_PORT:-3340}/generate_204 >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  verify-mock:
+    build:
+      context: .
+      target: verify-mock
+    image: ${VERIFY_MOCK_IMAGE:-ts-derper-verify-mock:dev}
+    container_name: ts-derper-verify-mock
+    restart: unless-stopped
+    profiles: ["verify-url"]
+    environment:
+      VERIFY_ALLOW_MODE: ${VERIFY_ALLOW_MODE:-allow-all}
+      VERIFY_ALLOWED_KEYS: ${VERIFY_ALLOWED_KEYS:-}
+    expose:
+      - "8080"
+
