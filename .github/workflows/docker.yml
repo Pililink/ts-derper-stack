@@ -8,15 +8,21 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      ts_version:
+        description: Optional Tailscale version override
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ts_version:
+        description: Tailscale version override
+        required: false
+        type: string
 
 concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-  TS_VERSION: ${{ vars.TS_VERSION || 'v1.96.4' }}
 
 jobs:
   build-and-push:
@@ -28,6 +34,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Read Tailscale version
+        id: ts_version
+        run: |
+          version='${{ inputs.ts_version }}'
+          if [ -z "$version" ]; then
+            version="$(tr -d '\r\n' < tailscale-version.txt)"
+          fi
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -38,22 +53,33 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request' && vars.DOCKERHUB_IMAGE != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: |
+            ghcr.io/${{ github.repository }}
+            name=${{ vars.DOCKERHUB_IMAGE }},enable=${{ vars.DOCKERHUB_IMAGE != '' }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=sha
+            type=raw,value=${{ steps.ts_version.outputs.value }},enable=${{ github.event_name != 'pull_request' }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.ts_version.outputs.value }}
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
@@ -62,10 +88,9 @@ jobs:
           target: runtime
           platforms: linux/amd64,linux/arm64
           build-args: |
-            TS_VERSION=${{ env.TS_VERSION }}
+            TS_VERSION=${{ steps.ts_version.outputs.value }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-

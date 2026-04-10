@@ -1,0 +1,87 @@
+name: sync-tailscale-release
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-tailscale-release
+  cancel-in-progress: true
+
+jobs:
+  check-release:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      latest: ${{ steps.latest.outputs.tag }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Resolve latest Tailscale release
+        id: latest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const release = await github.rest.repos.getLatestRelease({
+              owner: 'tailscale',
+              repo: 'tailscale',
+            });
+            core.setOutput('tag', release.data.tag_name);
+
+      - name: Read tracked Tailscale version
+        id: current
+        run: |
+          version="$(tr -d '\r\n' < tailscale-version.txt)"
+          echo "tag=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ '${{ steps.current.outputs.tag }}' != '${{ steps.latest.outputs.tag }}' ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-image:
+    needs: check-release
+    if: needs.check-release.outputs.changed == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    secrets: inherit
+    with:
+      ts_version: ${{ needs.check-release.outputs.latest }}
+
+  update-tracked-version:
+    runs-on: ubuntu-latest
+    needs:
+      - check-release
+      - build-image
+    if: needs.check-release.outputs.changed == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update tracked version
+        run: |
+          printf '%s\n' '${{ needs.check-release.outputs.latest }}' > tailscale-version.txt
+
+      - name: Commit and push version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tailscale-version.txt
+          git commit -m "Bump Tailscale version to ${{ needs.check-release.outputs.latest }}"
+          git push origin HEAD:main

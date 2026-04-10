@@ -17,10 +17,12 @@
 ```text
 .
 ├── .github/workflows/docker.yml
+├── .github/workflows/sync-tailscale-release.yml
 ├── compose/verify-mock
 ├── docker-compose.yml
 ├── Dockerfile
-└── scripts/entrypoint.sh
+├── scripts/entrypoint.sh
+└── tailscale-version.txt
 ```
 
 ## 快速开始
@@ -180,13 +182,25 @@ docker compose up --build -d derper
 
 - PR：仅构建，不推送。
 - push 到 `main` 或 `v*` tag：构建并推送到 `ghcr.io/<owner>/<repo>`。
+- 如果配置了 Docker Hub 仓库名，也会同步推送到 Docker Hub。
 - 使用 `docker/build-push-action` 输出 `linux/amd64` 与 `linux/arm64`。
+- 构建使用仓库根目录的 `tailscale-version.txt` 作为上游 Tailscale 版本来源。
 
-可选仓库变量：
+另外新增 `.github/workflows/sync-tailscale-release.yml`：
 
-| 变量 | 用途 |
-| --- | --- |
-| `TS_VERSION` | 指定要构建的 Tailscale tag，默认 `v1.96.4`。 |
+- 每 30 分钟检查一次 `tailscale/tailscale` 的最新 release。
+- 如果发现新版 release，则直接调用构建流程构建并发布新镜像。
+- 只有构建成功后，才会自动更新 `tailscale-version.txt` 并推送到 `main`。
+
+手动切换要构建的上游版本时，直接修改 `tailscale-version.txt` 即可。
+
+需要配置的仓库 Secrets / Variables：
+
+| 类型 | 名称 | 用途 |
+| --- | --- | --- |
+| Secret | `DOCKERHUB_USERNAME` | Docker Hub 用户名。 |
+| Secret | `DOCKERHUB_TOKEN` | Docker Hub Access Token，建议不要用账号密码。 |
+| Variable | `DOCKERHUB_IMAGE` | Docker Hub 镜像名，例如 `pililink/ts-derper-stack`。留空则只推 GHCR。 |
 
 ## 常见问题
 
