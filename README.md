@@ -183,6 +183,8 @@ docker compose up --build -d derper
 - PR：仅构建，不推送。
 - push 到 `main` 或 `v*` tag：构建并推送到 `ghcr.io/<owner>/<repo>`。
 - 如果配置了 Docker Hub 仓库名，也会同步推送到 Docker Hub。
+- 默认分支发布时会额外推送 `latest` tag。
+- 推送到 Docker Hub 后，会同步当前仓库 `README.md` 到 Docker Hub 的 `Overview`。
 - 使用 `docker/build-push-action` 输出 `linux/amd64` 与 `linux/arm64`。
 - 构建使用仓库根目录的 `tailscale-version.txt` 作为上游 Tailscale 版本来源。
 
