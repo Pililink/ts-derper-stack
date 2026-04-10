@@ -1,11 +1,6 @@
 services:
   derper:
-    build:
-      context: .
-      target: runtime
-      args:
-        TS_VERSION: ${TS_VERSION:-v1.96.4}
-    image: ${DERPER_IMAGE:-ts-derper-stack:dev}
+    image: ${DERPER_IMAGE:-ghcr.io/pililink/ts-derper-stack:latest}
     container_name: ts-derper
     restart: unless-stopped
     environment:
@@ -51,4 +46,3 @@ services:
       VERIFY_ALLOWED_KEYS: ${VERIFY_ALLOWED_KEYS:-}
     expose:
       - "8080"
-

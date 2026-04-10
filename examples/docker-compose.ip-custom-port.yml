@@ -1,0 +1,19 @@
+services:
+  derper:
+    image: ghcr.io/pililink/ts-derper-stack:latest
+    container_name: ts-derper-ip-custom-port
+    restart: unless-stopped
+    environment:
+      DERP_ADDR: ":5443"
+      DERP_HTTP_PORT: "-1"
+      DERP_STUN_PORT: "3479"
+      DERP_AUTH_MODE: "none"
+      DERP_CERT_MODE: "manual"
+      DERP_HOSTNAME: "203.0.113.10"
+    ports:
+      - "5443:5443/tcp"
+      - "3479:3479/udp"
+    volumes:
+      - ./compose-data/derper:/var/lib/derper
+      - ./compose-data/certs:/var/cache/derper-certs
+

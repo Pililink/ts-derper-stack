@@ -1,0 +1,9 @@
+services:
+  derper:
+    build:
+      context: .
+      target: runtime
+      args:
+        TS_VERSION: ${TS_VERSION:-v1.96.4}
+    image: ${DERPER_IMAGE:-ts-derper-stack:dev}
+

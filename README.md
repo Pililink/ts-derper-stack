@@ -19,8 +19,12 @@
 ├── .github/workflows/docker.yml
 ├── .github/workflows/sync-tailscale-release.yml
 ├── compose/verify-mock
+├── docker-compose.build.yml
 ├── docker-compose.yml
 ├── Dockerfile
+├── examples/docker-compose.host-tailscaled.yml
+├── examples/docker-compose.ip-custom-port.yml
+├── examples/docker-compose.ip-custom-port-verify-clients.yml
 ├── scripts/entrypoint.sh
 └── tailscale-version.txt
 ```
@@ -45,10 +49,25 @@ docker buildx build --load --target runtime -t ts-derper-stack:test .
 ### 1. 本地自定义端口启动
 
 默认 Compose 使用 `3340/tcp + 3478/udp`，避免本机直接占用 `80/443`。
+默认会直接使用 GitHub Container Registry 上的镜像：`ghcr.io/pililink/ts-derper-stack:latest`。
 
 ```bash
-docker compose up --build -d derper
+docker compose pull derper
+docker compose up -d derper
 curl -i http://127.0.0.1:3340/generate_204
+```
+
+如果只想拉取远端镜像，不需要本地构建，可以直接用：
+
+```bash
+docker compose pull derper
+docker compose up -d derper
+```
+
+如果要改成本地源码构建，再叠加 `docker-compose.build.yml`：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up --build -d derper
 ```
 
 ### 2. 本地测试 `verify-client-url`
@@ -158,7 +177,8 @@ docker run -d \
 ### 本地纯 DERP
 
 ```bash
-docker compose up --build -d derper
+docker compose pull derper
+docker compose up -d derper
 ```
 
 ### 本地 URL 验证联调
@@ -173,8 +193,145 @@ DERP_AUTH_MODE=verify-client-url docker compose --profile verify-url up --build 
 DERP_AUTH_MODE=verify-clients \
 TAILSCALED_RUN=true \
 TAILSCALE_AUTH_KEY=tskey-xxxxx \
-docker compose up --build -d derper
+docker compose pull derper && \
+docker compose up -d derper
 ```
+
+### 纯 IP + 自定义端口示例
+
+如果你没有域名，只想先用公网 IP 加自定义端口跑一个 DERP，可以直接参考：
+
+- [examples/docker-compose.ip-custom-port.yml](D:/src_test_env/ts-derper-stack/examples/docker-compose.ip-custom-port.yml)
+
+示例内容：
+
+```yaml
+services:
+  derper:
+    image: ghcr.io/pililink/ts-derper-stack:latest
+    container_name: ts-derper-ip-custom-port
+    restart: unless-stopped
+    environment:
+      DERP_ADDR: ":5443"
+      DERP_HTTP_PORT: "-1"
+      DERP_STUN_PORT: "3479"
+      DERP_AUTH_MODE: "none"
+      DERP_CERT_MODE: "manual"
+      DERP_HOSTNAME: "203.0.113.10"
+    ports:
+      - "5443:5443/tcp"
+      - "3479:3479/udp"
+    volumes:
+      - ./compose-data/derper:/var/lib/derper
+      - ./compose-data/certs:/var/cache/derper-certs
+```
+
+启动方式：
+
+```bash
+docker compose -f examples/docker-compose.ip-custom-port.yml up -d
+```
+
+说明：
+
+- 把 `203.0.113.10` 改成你自己的服务器公网 IP。
+- 这里用的是 `5443/tcp` 作为 DERP 主端口，`3479/udp` 作为 STUN 端口。
+- `DERP_CERT_MODE=manual` 且 `DERP_HOSTNAME` 是 IP 时，`derper` 会在首次启动时自动在 `/var/cache/derper-certs` 下生成该 IP 的自签名证书。
+- 这种模式适合测试、内网、或 Headscale 自定义 DERPMap 场景，不适合直接当公开互联网默认方案。
+- 如果客户端要校验这个 IP 自签名证书，DERPMap 里除了 `HostName` 和 `DERPPort`，还需要填 `CertName`。`derper` 首次启动日志里会打印对应的 `tailcfg.DERPNode` JSON 片段，可直接拿去填。
+
+### 纯 IP + 自定义端口 + `verify-clients`
+
+如果你要纯 IP 部署，同时启用 `verify-clients`，可以参考：
+
+- [examples/docker-compose.ip-custom-port-verify-clients.yml](D:/src_test_env/ts-derper-stack/examples/docker-compose.ip-custom-port-verify-clients.yml)
+
+示例内容：
+
+```yaml
+services:
+  derper:
+    image: ghcr.io/pililink/ts-derper-stack:latest
+    container_name: ts-derper-ip-verify-clients
+    restart: unless-stopped
+    environment:
+      DERP_ADDR: ":5443"
+      DERP_HTTP_PORT: "-1"
+      DERP_STUN_PORT: "3479"
+      DERP_AUTH_MODE: "verify-clients"
+      DERP_CERT_MODE: "manual"
+      DERP_HOSTNAME: "203.0.113.10"
+      TAILSCALED_RUN: "true"
+      TAILSCALE_AUTH_KEY: "tskey-xxxxxxxx"
+      TAILSCALE_LOGIN_SERVER: "https://headscale.example.com"
+      TAILSCALE_HOSTNAME: "derper-ip-node"
+    ports:
+      - "5443:5443/tcp"
+      - "3479:3479/udp"
+    volumes:
+      - ./compose-data/derper:/var/lib/derper
+      - ./compose-data/tailscale:/var/lib/tailscale
+      - ./compose-data/certs:/var/cache/derper-certs
+```
+
+启动方式：
+
+```bash
+docker compose -f examples/docker-compose.ip-custom-port-verify-clients.yml up -d
+```
+
+说明：
+
+- 这个例子和上一个纯 IP 例子的区别，是显式启用了 `DERP_AUTH_MODE=verify-clients`。
+- 因为用了 `verify-clients`，所以必须带上 `TAILSCALED_RUN=true`，让容器内嵌 `tailscaled` 启动。
+- `TAILSCALE_AUTH_KEY` 用于首次自动加入 tailnet。
+- `TAILSCALE_LOGIN_SERVER` 需要改成你自己的 Headscale 或 Tailscale control plane 地址。
+- 如果你不是首次启动，而是希望复用已有 `tailscaled` 状态，也可以把 `TAILSCALE_AUTH_KEY` 去掉，保留 `/var/lib/tailscale` 持久化卷即可。
+
+### 复用宿主机 `tailscaled`
+
+如果宿主机已经在运行 `tailscaled`，并且你希望 `derper` 直接复用宿主机的 LocalAPI socket，可以参考：
+
+- [examples/docker-compose.host-tailscaled.yml](D:/src_test_env/ts-derper-stack/examples/docker-compose.host-tailscaled.yml)
+
+示例内容：
+
+```yaml
+services:
+  derper:
+    image: ghcr.io/pililink/ts-derper-stack:latest
+    container_name: ts-derper-host-tailscaled
+    restart: unless-stopped
+    environment:
+      DERP_ADDR: ":5443"
+      DERP_HTTP_PORT: "-1"
+      DERP_STUN_PORT: "3479"
+      DERP_AUTH_MODE: "verify-clients"
+      DERP_CERT_MODE: "manual"
+      DERP_HOSTNAME: "203.0.113.10"
+      TAILSCALED_RUN: "false"
+      TAILSCALED_SOCKET_PATH: "/var/run/tailscale/tailscaled.sock"
+    ports:
+      - "5443:5443/tcp"
+      - "3479:3479/udp"
+    volumes:
+      - /var/run/tailscale:/var/run/tailscale
+      - ./compose-data/derper:/var/lib/derper
+      - ./compose-data/certs:/var/cache/derper-certs
+```
+
+启动方式：
+
+```bash
+docker compose -f examples/docker-compose.host-tailscaled.yml up -d
+```
+
+说明：
+
+- 这个例子不会在容器里启动新的 `tailscaled`，因为显式设置了 `TAILSCALED_RUN=false`。
+- 容器通过挂载 `/var/run/tailscale` 目录，直接访问宿主机的 `tailscaled.sock`。
+- 宿主机上的 `tailscaled` 需要已经正常运行，并且已经加入目标 tailnet。
+- `verify-clients` 模式下，官方仍然建议 `derper` 与 `tailscaled` 使用相同 revision。
 
 ## GitHub Actions 发布
 
