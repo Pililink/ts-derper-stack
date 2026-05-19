@@ -12,6 +12,47 @@
 - 提供 Docker Compose 本地测试环境。
 - 提供 GitHub Actions 自动构建并推送 `linux/amd64`、`linux/arm64` 多架构镜像。
 
+## 镜像地址与标签
+
+推荐直接使用 GitHub Container Registry 上的镜像：
+
+```bash
+docker pull ghcr.io/pililink/ts-derper-stack:latest
+```
+
+镜像名：
+
+```text
+ghcr.io/pililink/ts-derper-stack
+```
+
+常用标签：
+
+| 标签 | 说明 |
+| --- | --- |
+| `latest` | 默认分支最新成功构建的镜像。 |
+| `vX.Y.Z` | 对应上游 Tailscale release 的镜像，例如 `v1.98.2`。 |
+| `main` | 默认分支构建结果。 |
+| `sha-*` | 对应 Git 提交的可追踪构建结果。 |
+
+快速运行一个标准端口 DERP：
+
+```bash
+docker run -d \
+  --name derper \
+  --restart unless-stopped \
+  -e DERP_ADDR=:443 \
+  -e DERP_HTTP_PORT=80 \
+  -e DERP_STUN_PORT=3478 \
+  -e DERP_HOSTNAME=derp.example.com \
+  -p 80:80/tcp \
+  -p 443:443/tcp \
+  -p 3478:3478/udp \
+  -v derper-data:/var/lib/derper \
+  -v derper-certs:/var/cache/derper-certs \
+  ghcr.io/pililink/ts-derper-stack:latest
+```
+
 ## 目录结构
 
 ```text
@@ -60,6 +101,7 @@ curl -i http://127.0.0.1:3340/generate_204
 如果只想拉取远端镜像，不需要本地构建，可以直接用：
 
 ```bash
+docker pull ghcr.io/pililink/ts-derper-stack:latest
 docker compose pull derper
 docker compose up -d derper
 ```
@@ -100,7 +142,7 @@ docker run --rm \
   -p 443:443/tcp \
   -p 80:80/tcp \
   -p 3478:3478/udp \
-  ghcr.io/your-org/ts-derper-stack:latest
+  ghcr.io/pililink/ts-derper-stack:latest
 ```
 
 2. 复用同 Pod 或同宿主机已有 `tailscaled` socket
@@ -111,7 +153,7 @@ docker run --rm \
   -e TAILSCALED_RUN=false \
   -e TAILSCALED_SOCKET_PATH=/var/run/tailscale/tailscaled.sock \
   -v /var/run/tailscale:/var/run/tailscale \
-  ghcr.io/your-org/ts-derper-stack:latest
+  ghcr.io/pililink/ts-derper-stack:latest
 ```
 
 ## 环境变量
@@ -169,7 +211,7 @@ docker run -d \
   -p 3478:3478/udp \
   -v derper-data:/var/lib/derper \
   -v derper-certs:/var/cache/derper-certs \
-  ghcr.io/your-org/ts-derper-stack:latest
+  ghcr.io/pililink/ts-derper-stack:latest
 ```
 
 ## Compose 说明
@@ -201,7 +243,7 @@ docker compose up -d derper
 
 如果你没有域名，只想先用公网 IP 加自定义端口跑一个 DERP，可以直接参考：
 
-- [examples/docker-compose.ip-custom-port.yml](D:/src_test_env/ts-derper-stack/examples/docker-compose.ip-custom-port.yml)
+- [examples/docker-compose.ip-custom-port.yml](examples/docker-compose.ip-custom-port.yml)
 
 示例内容：
 
@@ -244,7 +286,7 @@ docker compose -f examples/docker-compose.ip-custom-port.yml up -d
 
 如果你要纯 IP 部署，同时启用 `verify-clients`，可以参考：
 
-- [examples/docker-compose.ip-custom-port-verify-clients.yml](D:/src_test_env/ts-derper-stack/examples/docker-compose.ip-custom-port-verify-clients.yml)
+- [examples/docker-compose.ip-custom-port-verify-clients.yml](examples/docker-compose.ip-custom-port-verify-clients.yml)
 
 示例内容：
 
@@ -292,7 +334,7 @@ docker compose -f examples/docker-compose.ip-custom-port-verify-clients.yml up -
 
 如果宿主机已经在运行 `tailscaled`，并且你希望 `derper` 直接复用宿主机的 LocalAPI socket，可以参考：
 
-- [examples/docker-compose.host-tailscaled.yml](D:/src_test_env/ts-derper-stack/examples/docker-compose.host-tailscaled.yml)
+- [examples/docker-compose.host-tailscaled.yml](examples/docker-compose.host-tailscaled.yml)
 
 示例内容：
 
@@ -338,10 +380,11 @@ docker compose -f examples/docker-compose.host-tailscaled.yml up -d
 工作流文件位于 `.github/workflows/docker.yml`，默认行为：
 
 - PR：仅构建，不推送。
-- push 到 `main` 或 `v*` tag：构建并推送到 `ghcr.io/<owner>/<repo>`。
+- push 到 `main` 或 `v*` tag：构建并推送到 `ghcr.io/pililink/ts-derper-stack`。
 - 如果配置了 Docker Hub 仓库名，也会同步推送到 Docker Hub。
 - 默认分支发布时会额外推送 `latest` tag。
 - 推送到 Docker Hub 后，会同步当前仓库 `README.md` 到 Docker Hub 的 `Overview`。
+- GHCR 镜像页面说明来自 OCI labels，工作流会写入标题、描述、文档链接、源码链接和上游 Tailscale 版本。
 - 使用 `docker/build-push-action` 输出 `linux/amd64` 与 `linux/arm64`。
 - 构建使用仓库根目录的 `tailscale-version.txt` 作为上游 Tailscale 版本来源。
 
@@ -386,5 +429,5 @@ docker compose -f examples/docker-compose.host-tailscaled.yml up -d
 ## 参考
 
 - Tailscale DERP README: https://github.com/tailscale/tailscale/tree/main/cmd/derper
-- Tailscale 最新 release（当前默认版本参考）: https://github.com/tailscale/tailscale/releases/tag/v1.96.4
+- Tailscale releases: https://github.com/tailscale/tailscale/releases
 - Headscale `/verify` 处理逻辑: https://github.com/juanfont/headscale/blob/main/hscontrol/handlers.go

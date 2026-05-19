@@ -79,7 +79,11 @@ jobs:
             type=raw,value=latest,enable=${{ github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch }}
             type=raw,value=${{ steps.ts_version.outputs.value }},enable=${{ github.event_name != 'pull_request' }}
           labels: |
+            org.opencontainers.image.title=ts-derper-stack
+            org.opencontainers.image.description=Multi-arch Tailscale DERP relay image bundling derper, tailscaled and tailscale.
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
             org.opencontainers.image.version=${{ steps.ts_version.outputs.value }}
 
       - name: Build and push multi-arch image
@@ -103,3 +107,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ vars.DOCKERHUB_IMAGE }}
+          short-description: Multi-arch Tailscale DERP relay with derper, tailscaled and tailscale.
+          readme-filepath: README.md
+          enable-url-completion: true
