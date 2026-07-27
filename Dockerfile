@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_IMAGE=golang:1.26.3-bookworm
+ARG GO_IMAGE=golang:1.26.5-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 ARG TS_VERSION=v1.96.4
 
