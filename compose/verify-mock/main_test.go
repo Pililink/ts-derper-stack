@@ -150,10 +150,15 @@ func TestREADMEEmbeddedTailscaledQuickStartKeepsEnvironmentOnComposeUp(t *testin
 	}
 }
 
-func TestREADMEBuildDocumentsTheTrackedVersionSource(t *testing.T) {
+func TestREADMEBuildDocumentsTheTrackedSourceLocks(t *testing.T) {
 	readme := readRepositoryFile(t, "README.md")
-	if !strings.Contains(readme, "默认构建版本唯一取自 [`tailscale-version.txt`](tailscale-version.txt)") {
-		t.Fatal("README must document tailscale-version.txt as the default local build version source")
+	for _, required := range []string{
+		"默认构建的 Tailscale 源码由 [`tailscale-version.txt`](tailscale-version.txt) 和 [`tailscale-commit.txt`](tailscale-commit.txt) 共同锁定",
+		"防止上游 tag 被移动后静默改变源码",
+	} {
+		if !strings.Contains(readme, required) {
+			t.Errorf("README must document the tracked source locks: missing %q", required)
+		}
 	}
 }
 

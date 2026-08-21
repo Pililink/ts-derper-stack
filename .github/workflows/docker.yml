@@ -69,7 +69,8 @@ jobs:
 
       - name: Test verify mock
         working-directory: compose/verify-mock
-        run: go test ./...
+        # The tests also verify README examples, which are not Go build inputs.
+        run: go test -count=1 ./...
 
       - name: Read and verify Tailscale source lock
         id: ts_source
@@ -261,7 +262,8 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository }}
-            name=${{ vars.DOCKERHUB_IMAGE }},enable=${{ env.DOCKERHUB_ENABLED == 'true' }}
+            # metadata-action validates image names before evaluating enable.
+            name=${{ vars.DOCKERHUB_IMAGE || 'docker.io/invalid/disabled' }},enable=${{ env.DOCKERHUB_ENABLED == 'true' }}
           # Do not move an upstream Tailscale version tag on ordinary main or v* rebuilds.
           # Only the sync workflow and an explicit default-branch manual publish set inputs.publish.
           tags: |
@@ -297,7 +299,7 @@ jobs:
 
       - name: Update Docker Hub description
         if: env.DOCKERHUB_ENABLED == 'true'
-        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9b5a223409c68ddfa # v5.0.0
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
