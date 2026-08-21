@@ -5,48 +5,96 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: sync-tailscale-release
   cancel-in-progress: true
 
 jobs:
   check-release:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
+      current: ${{ steps.current.outputs.tag }}
+      current_commit: ${{ steps.current.outputs.commit }}
       latest: ${{ steps.latest.outputs.tag }}
-    permissions:
-      contents: read
+      latest_commit: ${{ steps.resolve_latest.outputs.commit }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
         with:
           ref: main
 
       - name: Resolve latest Tailscale release
         id: latest
-        uses: actions/github-script@v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const release = await github.rest.repos.getLatestRelease({
               owner: 'tailscale',
               repo: 'tailscale',
             });
-            core.setOutput('tag', release.data.tag_name);
+            const tag = release.data.tag_name;
+            if (!/^v\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z][0-9A-Za-z.+-]*)?$/.test(tag)) {
+              core.setFailed(`Unexpected Tailscale release tag: ${tag}`);
+              return;
+            }
+            core.setOutput('tag', tag);
 
-      - name: Read tracked Tailscale version
+      - name: Resolve immutable latest release commit
+        id: resolve_latest
+        env:
+          LATEST_TS_VERSION: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -Eeuo pipefail
+
+          refs="$(git ls-remote --tags https://github.com/tailscale/tailscale.git)"
+          commit="$(awk -v tag="refs/tags/${LATEST_TS_VERSION}" '$2 == tag "^{}" { print $1; found=1 } END { if (!found) exit 1 }' <<<"${refs}" || true)"
+          if [[ -z "${commit}" ]]; then
+            commit="$(awk -v tag="refs/tags/${LATEST_TS_VERSION}" '$2 == tag { print $1; found=1 } END { if (!found) exit 1 }' <<<"${refs}" || true)"
+          fi
+          if ! [[ "${commit}" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'Could not resolve %s to a Git commit.\n' "${LATEST_TS_VERSION}" >&2
+            exit 1
+          fi
+          printf 'commit=%s\n' "${commit}" >> "$GITHUB_OUTPUT"
+
+      - name: Read tracked Tailscale source lock
         id: current
         run: |
+          set -Eeuo pipefail
+
           version="$(tr -d '\r\n' < tailscale-version.txt)"
-          echo "tag=${version}" >> "$GITHUB_OUTPUT"
+          commit="$(tr -d '\r\n' < tailscale-commit.txt)"
+          if ! [[ "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z][0-9A-Za-z.+-]*)?$ ]]; then
+            printf 'Invalid tracked Tailscale version: %s\n' "${version}" >&2
+            exit 1
+          fi
+          if ! [[ "${commit}" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'Invalid tracked Tailscale commit: %s\n' "${commit}" >&2
+            exit 1
+          fi
+
+          printf 'tag=%s\n' "${version}" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "${commit}" >> "$GITHUB_OUTPUT"
 
       - name: Compare versions
         id: compare
+        env:
+          CURRENT_TS_VERSION: ${{ steps.current.outputs.tag }}
+          CURRENT_TS_COMMIT: ${{ steps.current.outputs.commit }}
+          LATEST_TS_VERSION: ${{ steps.latest.outputs.tag }}
+          LATEST_TS_COMMIT: ${{ steps.resolve_latest.outputs.commit }}
         run: |
-          if [ '${{ steps.current.outputs.tag }}' != '${{ steps.latest.outputs.tag }}' ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          set -Eeuo pipefail
+
+          if [[ "${CURRENT_TS_VERSION}" != "${LATEST_TS_VERSION}" ]] || [[ "${CURRENT_TS_COMMIT}" != "${LATEST_TS_COMMIT}" ]]; then
+            printf 'changed=true\n' >> "$GITHUB_OUTPUT"
           else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
           fi
 
   build-image:
@@ -56,32 +104,82 @@ jobs:
       contents: read
       packages: write
     uses: ./.github/workflows/docker.yml
-    secrets: inherit
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     with:
       ts_version: ${{ needs.check-release.outputs.latest }}
+      ts_commit: ${{ needs.check-release.outputs.latest_commit }}
+      publish: true
 
   update-tracked-version:
     runs-on: ubuntu-latest
     needs:
       - check-release
       - build-image
-    if: needs.check-release.outputs.changed == 'true'
+    if: >-
+      needs.check-release.outputs.changed == 'true' &&
+      needs.build-image.result == 'success'
     permissions:
       contents: write
+    env:
+      EXPECTED_CURRENT_TS_VERSION: ${{ needs.check-release.outputs.current }}
+      EXPECTED_CURRENT_TS_COMMIT: ${{ needs.check-release.outputs.current_commit }}
+      LATEST_TS_VERSION: ${{ needs.check-release.outputs.latest }}
+      LATEST_TS_COMMIT: ${{ needs.check-release.outputs.latest_commit }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
         with:
           ref: main
 
-      - name: Update tracked version
-        run: |
-          printf '%s\n' '${{ needs.check-release.outputs.latest }}' > tailscale-version.txt
-
       - name: Commit and push version bump
         run: |
+          set -Eeuo pipefail
+
+          validate_version() {
+            [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z][0-9A-Za-z.+-]*)?$ ]]
+          }
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tailscale-version.txt
-          git commit -m "Bump Tailscale version to ${{ needs.check-release.outputs.latest }}"
-          git push origin HEAD:main
+
+          for attempt in 1 2 3; do
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            git checkout --force -B main refs/remotes/origin/main
+
+            current_version="$(tr -d '\r\n' < tailscale-version.txt)"
+            current_commit="$(tr -d '\r\n' < tailscale-commit.txt)"
+            if ! validate_version "${current_version}" || ! [[ "${current_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+              printf 'Invalid tracked Tailscale source lock: %s / %s\n' "${current_version}" "${current_commit}" >&2
+              exit 1
+            fi
+
+            if [[ "${current_version}" == "${LATEST_TS_VERSION}" && "${current_commit}" == "${LATEST_TS_COMMIT}" ]]; then
+              printf 'Tailscale source %s (%s) is already tracked.\n' "${LATEST_TS_VERSION}" "${LATEST_TS_COMMIT}"
+              exit 0
+            fi
+
+            if [[ "${current_version}" != "${EXPECTED_CURRENT_TS_VERSION}" || "${current_commit}" != "${EXPECTED_CURRENT_TS_COMMIT}" ]]; then
+              printf 'Tracked source changed from %s/%s to %s/%s; leaving it untouched.\n' \
+                "${EXPECTED_CURRENT_TS_VERSION}" "${EXPECTED_CURRENT_TS_COMMIT}" "${current_version}" "${current_commit}" >&2
+              exit 0
+            fi
+
+            printf '%s\n' "${LATEST_TS_VERSION}" > tailscale-version.txt.tmp
+            printf '%s\n' "${LATEST_TS_COMMIT}" > tailscale-commit.txt.tmp
+            mv tailscale-version.txt.tmp tailscale-version.txt
+            mv tailscale-commit.txt.tmp tailscale-commit.txt
+            git add tailscale-version.txt tailscale-commit.txt
+            git commit -m "Bump Tailscale source to ${LATEST_TS_VERSION}"
+
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+
+            printf 'Push raced with another update; retrying (%s/3).\n' "${attempt}" >&2
+            sleep "${attempt}"
+          done
+
+          printf 'Could not update Tailscale source lock after three attempts.\n' >&2
+          exit 1

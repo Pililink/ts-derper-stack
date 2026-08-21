@@ -4,30 +4,33 @@ services:
     container_name: ts-derper
     restart: unless-stopped
     environment:
-      DERP_ADDR: ${DERP_ADDR:-:3340}
+      # DERP_PORT is the Compose source of truth for the main TCP listener and mapping.
+      DERP_PORT: ${DERP_PORT:-3340}
+      DERP_ADDR: ${DERP_ADDR:-:${DERP_PORT:-3340}}
       DERP_HTTP_PORT: ${DERP_HTTP_PORT:--1}
       DERP_STUN_PORT: ${DERP_STUN_PORT:-3478}
       DERP_AUTH_MODE: ${DERP_AUTH_MODE:-none}
       DERP_VERIFY_CLIENT_URL: ${DERP_VERIFY_CLIENT_URL:-http://verify-mock:8080/verify}
-      DERP_VERIFY_CLIENT_URL_FAIL_OPEN: ${DERP_VERIFY_CLIENT_URL_FAIL_OPEN:-true}
+      DERP_VERIFY_CLIENT_URL_FAIL_OPEN: ${DERP_VERIFY_CLIENT_URL_FAIL_OPEN:-false}
       DERP_CERT_MODE: ${DERP_CERT_MODE:-letsencrypt}
       DERP_HOSTNAME: ${DERP_HOSTNAME:-}
       DERP_EXTRA_ARGS: ${DERP_EXTRA_ARGS:-}
-      TAILSCALED_RUN: ${TAILSCALED_RUN:-false}
+      DERP_HEALTHCHECK_URL: ${DERP_HEALTHCHECK_URL:-}
+      TAILSCALED_RUN: ${TAILSCALED_RUN:-auto}
       TAILSCALE_AUTH_KEY: ${TAILSCALE_AUTH_KEY:-}
       TAILSCALE_LOGIN_SERVER: ${TAILSCALE_LOGIN_SERVER:-}
       TAILSCALE_HOSTNAME: ${TAILSCALE_HOSTNAME:-}
       TAILSCALE_UP_EXTRA_ARGS: ${TAILSCALE_UP_EXTRA_ARGS:-}
       TAILSCALED_EXTRA_ARGS: ${TAILSCALED_EXTRA_ARGS:-}
     ports:
-      - "${HOST_DERP_TCP_PORT:-3340}:${HOST_DERP_CONTAINER_PORT:-3340}/tcp"
+      - "${HOST_DERP_TCP_PORT:-${DERP_PORT:-3340}}:${DERP_PORT:-3340}/tcp"
       - "${HOST_STUN_PORT:-3478}:${DERP_STUN_PORT:-3478}/udp"
     volumes:
       - ./compose-data/derper:/var/lib/derper
       - ./compose-data/tailscale:/var/lib/tailscale
       - ./compose-data/certs:/var/cache/derper-certs
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${HOST_DERP_CONTAINER_PORT:-3340}/generate_204 >/dev/null || exit 1"]
+      test: ["CMD", "/opt/ts-derper/entrypoint.sh", "healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 5

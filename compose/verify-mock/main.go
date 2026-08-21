@@ -21,6 +21,13 @@ func main() {
 	mode := envOrDefault("VERIFY_ALLOW_MODE", "allow-all")
 	allowedKeys := parseAllowedKeys(os.Getenv("VERIFY_ALLOWED_KEYS"))
 
+	log.Printf("verify mock listening on %s in %s mode", addr, mode)
+	if err := http.ListenAndServe(addr, newHandler(mode, allowedKeys)); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func newHandler(mode string, allowedKeys map[string]struct{}) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -46,10 +53,7 @@ func main() {
 		}
 	})
 
-	log.Printf("verify mock listening on %s in %s mode", addr, mode)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Fatal(err)
-	}
+	return mux
 }
 
 func envOrDefault(name, fallback string) string {
@@ -82,4 +86,3 @@ func shouldAllow(mode, nodeKey string, allowedKeys map[string]struct{}) bool {
 		return true
 	}
 }
-

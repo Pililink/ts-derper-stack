@@ -10,7 +10,7 @@ services:
       DERP_AUTH_MODE: "verify-clients"
       DERP_CERT_MODE: "manual"
       DERP_HOSTNAME: "203.0.113.10"
-      TAILSCALED_RUN: "true"
+      TAILSCALED_RUN: "auto"
       TAILSCALE_AUTH_KEY: "tskey-xxxxxxxx"
       TAILSCALE_LOGIN_SERVER: "https://headscale.example.com"
       TAILSCALE_HOSTNAME: "derper-ip-node"

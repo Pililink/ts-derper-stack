@@ -4,7 +4,7 @@
 
 ## 功能概览
 
-- 基于同一 Tailscale 源码版本编译 `tailscaled`、`tailscale`、`derper`，满足 `--verify-clients` 的同 revision 约束。
+- 基于同一 Tailscale Git revision 编译 `tailscaled`、`tailscale`、`derper`，满足 `--verify-clients` 的同 revision 约束。
 - 单镜像同时支持：
   - `verify-clients`，依赖同容器内嵌 `tailscaled`，或同 Pod/同宿主机挂载现成 socket。
   - `verify-client-url`，可直接对接 Headscale 的 `/verify`。
@@ -31,7 +31,7 @@ ghcr.io/pililink/ts-derper-stack
 | 标签 | 说明 |
 | --- | --- |
 | `latest` | 默认分支最新成功构建的镜像。 |
-| `vX.Y.Z` | 对应上游 Tailscale release 的镜像，例如 `v1.98.2`。 |
+| `vX.Y.Z` | 对应上游 Tailscale release；仅同步发布或默认分支手动选择 `publish=true` 时写入。构建默认版本由 [`tailscale-version.txt`](tailscale-version.txt) 决定。 |
 | `main` | 默认分支构建结果。 |
 | `sha-*` | 对应 Git 提交的可追踪构建结果。 |
 
@@ -57,16 +57,19 @@ docker run -d \
 
 ```text
 .
+├── .gitattributes
 ├── .github/workflows/docker.yml
 ├── .github/workflows/sync-tailscale-release.yml
 ├── compose/verify-mock
 ├── docker-compose.build.yml
+├── docker-compose.tls.yml
 ├── docker-compose.yml
 ├── Dockerfile
 ├── examples/docker-compose.host-tailscaled.yml
 ├── examples/docker-compose.ip-custom-port.yml
 ├── examples/docker-compose.ip-custom-port-verify-clients.yml
 ├── scripts/entrypoint.sh
+├── tailscale-commit.txt
 └── tailscale-version.txt
 ```
 
@@ -85,11 +88,23 @@ docker run -d \
 docker buildx build --load --target runtime -t ts-derper-stack:test .
 ```
 
+默认构建的 Tailscale 源码由 [`tailscale-version.txt`](tailscale-version.txt) 和 [`tailscale-commit.txt`](tailscale-commit.txt) 共同锁定：构建会校验 release tag 最终解析到该 commit，防止上游 tag 被移动后静默改变源码。镜像内分别记录 `/usr/local/share/tailscale.version`、`/usr/local/share/tailscale.revision` 和 `/usr/local/share/tailscale.commit`。
+
+需要临时测试其他上游 release 时，必须成对传入版本和已解析的 40 位 Git commit，例如：
+
+```bash
+docker buildx build --load --target runtime -t ts-derper-stack:test \
+  --build-arg TS_VERSION=vX.Y.Z \
+  --build-arg TS_COMMIT=COMMIT_SHA .
+```
+
+仅传入其中一个参数会失败；不要修改 Dockerfile 或 Compose 中的默认锁定值。
+
 如果仍然使用 `docker build`，请确保本机 Docker 已启用 BuildKit。
 
 ### 1. 本地自定义端口启动
 
-默认 Compose 使用 `3340/tcp + 3478/udp`，避免本机直接占用 `80/443`。
+根 Compose 默认使用 `3340/tcp + 3478/udp`，避免本机直接占用 `80/443`，并以纯 HTTP 运行本地 smoke test。
 默认会直接使用 GitHub Container Registry 上的镜像：`ghcr.io/pililink/ts-derper-stack:latest`。
 
 ```bash
@@ -112,32 +127,45 @@ docker compose up -d derper
 docker compose -f docker-compose.yml -f docker-compose.build.yml up --build -d derper
 ```
 
-### 2. 本地测试 `verify-client-url`
+### 1.1 标准端口 TLS/ACME 启动
 
-仓库自带一个验证 mock 服务，便于联调 `DERPAdmitClientRequest` 流程。
+生产环境使用 TLS 覆盖文件；它将 DERP 主端口切到 `443`、开启 HTTP `80`（ACME HTTP-01），并映射 `80/tcp`、`443/tcp` 和 `3478/udp`。在 DNS 已指向该主机后运行：
 
 ```bash
+DERP_HOSTNAME=derp.example.com \
+DERP_CERT_MODE=letsencrypt \
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d derper
+```
+
+`DERP_HOSTNAME` 必须是可从互联网解析到这台主机的域名；TLS/ACME 模式不要使用裸 IP。TLS 覆盖文件的健康检查使用 HTTPS，因此不需要手工修改 base Compose 的端口映射或探针。
+
+### 2. 本地测试 `verify-client-url`
+
+仓库自带一个验证 mock 服务，便于联调 `DERPAdmitClientRequest` 流程。联调命令必须显式启用 URL 验证并设为 fail-closed：
+
+```bash
+DERP_AUTH_MODE=verify-client-url \
+DERP_VERIFY_CLIENT_URL=http://verify-mock:8080/verify \
+DERP_VERIFY_CLIENT_URL_FAIL_OPEN=false \
 docker compose --profile verify-url up --build -d
 ```
 
-常用环境变量示例：
-
-```bash
-DERP_AUTH_MODE=verify-client-url
-DERP_VERIFY_CLIENT_URL=http://verify-mock:8080/verify
-DERP_VERIFY_CLIENT_URL_FAIL_OPEN=true
-```
+默认 `VERIFY_ALLOW_MODE=allow-all`。可用 `VERIFY_ALLOW_MODE=deny-all` 或 `VERIFY_ALLOW_MODE=allow-listed VERIFY_ALLOWED_KEYS='nodekey:...'` 覆盖 mock 行为。
 
 ### 3. 启用 `verify-clients`
 
-`verify-clients` 需要 `derper` 与 `tailscaled` 使用同一源码 revision，本仓库镜像已保证这一点。启动时有两种方式：
+`verify-clients` 需要 `derper` 与 `tailscaled` 使用同一 Tailscale Git revision。镜像内嵌模式已保证这一点；复用外部 socket 时，这是硬性前提。启动时有两种方式：
 
 1. 内嵌 `tailscaled`
 
 ```bash
 docker run --rm \
+  -e DERP_ADDR=:443 \
+  -e DERP_HTTP_PORT=80 \
+  -e DERP_STUN_PORT=3478 \
+  -e DERP_HOSTNAME=derp.example.com \
   -e DERP_AUTH_MODE=verify-clients \
-  -e TAILSCALED_RUN=true \
+  -e TAILSCALED_RUN=auto \
   -e TAILSCALE_AUTH_KEY=tskey-xxxxx \
   -p 443:443/tcp \
   -p 80:80/tcp \
@@ -149,34 +177,47 @@ docker run --rm \
 
 ```bash
 docker run --rm \
+  -e DERP_ADDR=:443 \
+  -e DERP_HTTP_PORT=80 \
+  -e DERP_STUN_PORT=3478 \
+  -e DERP_HOSTNAME=derp.example.com \
   -e DERP_AUTH_MODE=verify-clients \
   -e TAILSCALED_RUN=false \
   -e TAILSCALED_SOCKET_PATH=/var/run/tailscale/tailscaled.sock \
+  -p 443:443/tcp \
+  -p 80:80/tcp \
+  -p 3478:3478/udp \
   -v /var/run/tailscale:/var/run/tailscale \
   ghcr.io/pililink/ts-derper-stack:latest
 ```
 
+复用外部 `tailscaled` 时，宿主机或同 Pod 的二进制必须与镜像内 `derper` 使用**完全相同的 Tailscale Git revision**；仅相同的 release 版本号不够。请先核对镜像内 `/usr/local/share/tailscale.revision` 与外部 `tailscaled` 的构建 revision；不能确认时，使用内嵌 `tailscaled`。
+
 ## 环境变量
+
+下表描述镜像入口支持的变量，直接使用 `docker run -e` 时可传入全部变量。根 `docker-compose.yml` 只会转发“Compose 变量”小节列出的项；未列出的镜像变量需通过自定义 Compose 覆盖文件加入 `environment`，否则设置在宿主环境中不会进入容器。
 
 ### DERP 相关
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `DERP_ADDR` | `:443` | `derper -a` 监听地址。非 `443` 端口时默认走纯 HTTP。 |
+| `DERP_PORT` | `443` | DERP 主监听端口；未设置 `DERP_ADDR` 时用于生成 `:${DERP_PORT}`。根 Compose 以它作为监听端口与容器端口映射的单一来源。 |
+| `DERP_ADDR` | `:${DERP_PORT}` | `derper -a` 监听地址。非 `443` 端口时默认走纯 HTTP。 |
 | `DERP_HTTP_PORT` | `80` | HTTP 端口，设为 `-1` 可关闭。 |
 | `DERP_STUN_PORT` | `3478` | STUN UDP 端口。 |
 | `DERP_AUTH_MODE` | `none` | `none`、`verify-clients`、`verify-client-url`。 |
 | `DERP_CONFIG_PATH` | `/var/lib/derper/derper.key` | DERP 私钥文件路径。 |
-| `DERP_CERT_MODE` | `letsencrypt` | `derper -certmode`。本地自定义端口场景通常不会触发 TLS。 |
+| `DERP_CERT_MODE` | `letsencrypt` | `derper -certmode`。`manual` 会启用 TLS，即使使用自定义端口。 |
 | `DERP_CERT_DIR` | `/var/cache/derper-certs` | Let’s Encrypt 缓存目录。 |
-| `DERP_HOSTNAME` | 空 | 对外域名。生产上使用 `:443` 时建议必填。 |
+| `DERP_HOSTNAME` | 空 | 对外名称。使用 `:443` 或 ACME 时必须设为可解析的域名；`manual` 自签名的纯 IP 用法见“纯 IP + 自定义端口示例”。 |
 | `DERP_HOME` | 空 | 主页行为，映射到 `derper -home`。 |
 | `DERP_VERIFY_CLIENT_URL` | 空 | `verify-client-url` 模式下的 admission controller 地址。 |
-| `DERP_VERIFY_CLIENT_URL_FAIL_OPEN` | `true` | URL 验证服务不可达时是否 fail-open。 |
+| `DERP_VERIFY_CLIENT_URL_FAIL_OPEN` | `false` | URL 验证服务不可达时是否放行；默认 fail-closed。仅在明确接受不可用时放行的场景设为 `true`。 |
 | `DERP_MESH_PSK_FILE` | 空 | 透传 `-mesh-psk-file`。 |
 | `DERP_MESH_WITH` | 空 | 透传 `-mesh-with`。 |
 | `DERP_BOOTSTRAP_DNS_NAMES` | 空 | 透传 `-bootstrap-dns-names`。 |
 | `DERP_EXTRA_ARGS` | 空 | 补充透传给 `derper` 的额外参数。 |
+| `DERP_HEALTHCHECK_URL` | 空 | 覆盖容器健康检查 URL；默认根据 `DERP_ADDR` 和 TLS 模式计算。 |
 
 ### Tailscale 相关
 
@@ -186,12 +227,22 @@ docker run --rm \
 | `TAILSCALED_SOCKET_PATH` | `/var/run/tailscale/tailscaled.sock` | LocalAPI socket 路径。 |
 | `TAILSCALED_STATE_DIR` | `/var/lib/tailscale` | `tailscaled` 状态目录。 |
 | `TAILSCALED_TUN` | `userspace-networking` | 默认避免容器额外依赖 TUN/NET_ADMIN。 |
-| `TAILSCALED_WAIT_TIMEOUT` | `60` | 等待 socket/LocalAPI 就绪的超时时间。 |
+| `TAILSCALED_WAIT_TIMEOUT` | `60` | 等待 socket、LocalAPI 与（`verify-clients` 模式下）`BackendState=Running` 的超时时间。 |
 | `TAILSCALED_EXTRA_ARGS` | 空 | 额外传给 `tailscaled`。 |
 | `TAILSCALE_AUTH_KEY` | 空 | 内嵌 `tailscaled` 时用于自动 `tailscale up`。 |
 | `TAILSCALE_LOGIN_SERVER` | 空 | 自定义 control plane，例如 Headscale。 |
 | `TAILSCALE_HOSTNAME` | 空 | `tailscale up --hostname`。 |
 | `TAILSCALE_UP_EXTRA_ARGS` | 空 | 追加到 `tailscale up`。 |
+
+### Compose 变量
+
+根 `docker-compose.yml` 会转发：`DERP_PORT`、`DERP_ADDR`、`DERP_HTTP_PORT`、`DERP_STUN_PORT`、`DERP_AUTH_MODE`、`DERP_VERIFY_CLIENT_URL`、`DERP_VERIFY_CLIENT_URL_FAIL_OPEN`、`DERP_CERT_MODE`、`DERP_HOSTNAME`、`DERP_EXTRA_ARGS`、`DERP_HEALTHCHECK_URL`、`TAILSCALED_RUN`、`TAILSCALE_AUTH_KEY`、`TAILSCALE_LOGIN_SERVER`、`TAILSCALE_HOSTNAME`、`TAILSCALE_UP_EXTRA_ARGS` 与 `TAILSCALED_EXTRA_ARGS`。
+
+- 基础 Compose 的默认值为 `DERP_PORT=3340`、`DERP_HTTP_PORT=-1`；`docker-compose.tls.yml` 覆盖为 `DERP_PORT=443`、`DERP_HTTP_PORT=80`，并默认设置 HTTPS 健康检查 URL。修改根 Compose 的主端口时设置 `DERP_PORT`，不要只改 `DERP_ADDR`，否则容器端口映射仍会跟随旧的 `DERP_PORT`。
+- `HOST_DERP_TCP_PORT` 和 `HOST_STUN_PORT` 控制主端口与 STUN 的宿主机映射；TLS 覆盖文件额外支持 `HOST_HTTP_PORT`。
+- `DERPER_IMAGE` 覆盖 DERP 镜像，`VERIFY_MOCK_IMAGE` 覆盖验证 mock 镜像。叠加 `docker-compose.build.yml` 时，`TS_VERSION` 和 `TS_COMMIT` 是成对的一次性构建覆盖；两者都留空时 Dockerfile 读取 `tailscale-version.txt` 与 `tailscale-commit.txt`。
+- `verify-url` profile 将 `VERIFY_ALLOW_MODE` 与 `VERIFY_ALLOWED_KEYS` 转发给验证 mock。
+- `DERP_CONFIG_PATH`、`DERP_CERT_DIR`、`DERP_HOME`、网格相关变量以及 `TAILSCALED_SOCKET_PATH`、`TAILSCALED_STATE_DIR`、`TAILSCALED_TUN`、`TAILSCALED_WAIT_TIMEOUT` 没有由根 Compose 转发。需要这些变量时，在自定义 Compose 覆盖文件的 `services.derper.environment` 中显式添加。
 
 ## 标准端口部署
 
@@ -206,6 +257,7 @@ docker run -d \
   -e DERP_HOSTNAME=derp.example.com \
   -e DERP_AUTH_MODE=verify-client-url \
   -e DERP_VERIFY_CLIENT_URL=https://headscale.example.com/verify \
+  -e DERP_VERIFY_CLIENT_URL_FAIL_OPEN=false \
   -p 80:80/tcp \
   -p 443:443/tcp \
   -p 3478:3478/udp \
@@ -226,16 +278,20 @@ docker compose up -d derper
 ### 本地 URL 验证联调
 
 ```bash
-DERP_AUTH_MODE=verify-client-url docker compose --profile verify-url up --build -d
+DERP_AUTH_MODE=verify-client-url \
+DERP_VERIFY_CLIENT_URL=http://verify-mock:8080/verify \
+DERP_VERIFY_CLIENT_URL_FAIL_OPEN=false \
+docker compose --profile verify-url up --build -d
 ```
 
 ### 本地嵌入 `tailscaled`
 
 ```bash
+docker compose pull derper
+
 DERP_AUTH_MODE=verify-clients \
-TAILSCALED_RUN=true \
+TAILSCALED_RUN=auto \
 TAILSCALE_AUTH_KEY=tskey-xxxxx \
-docker compose pull derper && \
 docker compose up -d derper
 ```
 
@@ -303,7 +359,7 @@ services:
       DERP_AUTH_MODE: "verify-clients"
       DERP_CERT_MODE: "manual"
       DERP_HOSTNAME: "203.0.113.10"
-      TAILSCALED_RUN: "true"
+      TAILSCALED_RUN: "auto"
       TAILSCALE_AUTH_KEY: "tskey-xxxxxxxx"
       TAILSCALE_LOGIN_SERVER: "https://headscale.example.com"
       TAILSCALE_HOSTNAME: "derper-ip-node"
@@ -325,7 +381,7 @@ docker compose -f examples/docker-compose.ip-custom-port-verify-clients.yml up -
 说明：
 
 - 这个例子和上一个纯 IP 例子的区别，是显式启用了 `DERP_AUTH_MODE=verify-clients`。
-- 因为用了 `verify-clients`，所以必须带上 `TAILSCALED_RUN=true`，让容器内嵌 `tailscaled` 启动。
+- `TAILSCALED_RUN=auto`（默认值）会在 `verify-clients` 模式下启动内嵌 `tailscaled`；示例显式保留该值以便阅读。
 - `TAILSCALE_AUTH_KEY` 用于首次自动加入 tailnet。
 - `TAILSCALE_LOGIN_SERVER` 需要改成你自己的 Headscale 或 Tailscale control plane 地址。
 - 如果你不是首次启动，而是希望复用已有 `tailscaled` 状态，也可以把 `TAILSCALE_AUTH_KEY` 去掉，保留 `/var/lib/tailscale` 持久化卷即可。
@@ -373,28 +429,29 @@ docker compose -f examples/docker-compose.host-tailscaled.yml up -d
 - 这个例子不会在容器里启动新的 `tailscaled`，因为显式设置了 `TAILSCALED_RUN=false`。
 - 容器通过挂载 `/var/run/tailscale` 目录，直接访问宿主机的 `tailscaled.sock`。
 - 宿主机上的 `tailscaled` 需要已经正常运行，并且已经加入目标 tailnet。
-- `verify-clients` 模式下，官方仍然建议 `derper` 与 `tailscaled` 使用相同 revision。
+- **硬性前提：** 宿主机的 `tailscaled` 必须与镜像内 `derper` 使用**完全相同的 Tailscale Git revision**；仅相同的 release 版本号不够。先比对镜像内 `/usr/local/share/tailscale.revision` 与宿主机二进制的构建 revision，不匹配时改用镜像内嵌 `tailscaled`。
 
 ## GitHub Actions 发布
 
 工作流文件位于 `.github/workflows/docker.yml`，默认行为：
 
-- PR：仅构建，不推送。
-- push 到 `main` 或 `v*` tag：构建并推送到 `ghcr.io/pililink/ts-derper-stack`。
+- PR 与从非默认分支手动触发的工作流：仅构建，不推送。
+- push 到 `main` 或 `v*` tag 会推送到 `ghcr.io/pililink/ts-derper-stack`；手动运行仅在默认分支显式选择 `publish=true` 时发布。发布 job 使用 `release` environment；请在仓库设置中配置 required reviewers 等 protection rules 后再用于生产发布。
 - 如果配置了 Docker Hub 仓库名，也会同步推送到 Docker Hub。
 - 默认分支发布时会额外推送 `latest` tag。
 - 推送到 Docker Hub 后，会同步当前仓库 `README.md` 到 Docker Hub 的 `Overview`。
 - GHCR 镜像页面说明来自 OCI labels，工作流会写入标题、描述、文档链接、源码链接和上游 Tailscale 版本。
 - 使用 `docker/build-push-action` 输出 `linux/amd64` 与 `linux/arm64`。
-- 构建使用仓库根目录的 `tailscale-version.txt` 作为上游 Tailscale 版本来源。
+- 构建使用仓库根目录的 `tailscale-version.txt` 与 `tailscale-commit.txt` 作为上游 Tailscale 不可变源码锁；工作流会校验 tag 解析到该 commit。
+- 上游 Tailscale 的 `vX.Y.Z` 镜像 tag 只在同步发布或默认分支手动选择 `publish=true` 时写入；普通 `main`/仓库 tag 推送不会重写它。
 
 另外新增 `.github/workflows/sync-tailscale-release.yml`：
 
 - 每 30 分钟检查一次 `tailscale/tailscale` 的最新 release。
-- 如果发现新版 release，则直接调用构建流程构建并发布新镜像。
-- 只有构建成功后，才会自动更新 `tailscale-version.txt` 并推送到 `main`。
+- 如果发现新版 release，则解析 annotated/lightweight tag 到 commit，再调用构建流程构建并发布新镜像。
+- 只有构建成功后，才会在同一个 Git 提交中更新 `tailscale-version.txt` 与 `tailscale-commit.txt` 并推送到 `main`。
 
-手动切换要构建的上游版本时，直接修改 `tailscale-version.txt` 即可。
+手动切换要构建的上游版本时，必须一起更新 `tailscale-version.txt` 和 `tailscale-commit.txt`；运行 `git ls-remote --tags https://github.com/tailscale/tailscale.git` 后优先记录对应 `refs/tags/vX.Y.Z^{}` 的 commit（lightweight tag 则记录 `refs/tags/vX.Y.Z`）。
 
 需要配置的仓库 Secrets / Variables：
 
@@ -410,8 +467,8 @@ docker compose -f examples/docker-compose.host-tailscaled.yml up -d
 
 优先检查：
 
-1. `derper` 与 `tailscaled` 是否来自同一 Tailscale revision。
-2. `tailscaled` 是否已成功 `tailscale up` 并加入目标 tailnet。
+1. `derper` 与 `tailscaled` 是否来自完全相同的 Tailscale Git revision（仅相同 release 版本号不够）。
+2. `tailscaled` 是否已成功 `tailscale up` 并加入目标 tailnet；容器健康检查会要求其 `BackendState=Running`，仅 socket 存在不足以通过检查。
 3. DERP 客户端是否在该 `tailscaled` 的 ACL 可见范围内。
 
 ### `verify-client-url` 模式连接超时
@@ -419,7 +476,7 @@ docker compose -f examples/docker-compose.host-tailscaled.yml up -d
 优先检查：
 
 1. `DERP_VERIFY_CLIENT_URL` 是否可从容器内访问。
-2. `DERP_VERIFY_CLIENT_URL_FAIL_OPEN` 是否符合预期。
+2. `DERP_VERIFY_CLIENT_URL_FAIL_OPEN` 是否符合预期；默认值为 `false`，验证服务不可达时会拒绝连接。
 3. Headscale 是否暴露了 `/verify`。
 
 ### 生产上为什么建议标准端口

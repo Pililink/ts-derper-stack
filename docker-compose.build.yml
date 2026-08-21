@@ -4,6 +4,8 @@ services:
       context: .
       target: runtime
       args:
-        TS_VERSION: ${TS_VERSION:-v1.96.4}
+        # Empty values let the Dockerfile read the two repository lock files.
+        # Overrides must be supplied as a TS_VERSION / TS_COMMIT pair.
+        TS_VERSION: ${TS_VERSION:-}
+        TS_COMMIT: ${TS_COMMIT:-}
     image: ${DERPER_IMAGE:-ts-derper-stack:dev}
-

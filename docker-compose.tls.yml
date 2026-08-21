@@ -1,0 +1,13 @@
+# Standard-port TLS/ACME overlay.
+# Usage: DERP_HOSTNAME=derp.example.com docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d derper
+services:
+  derper:
+    environment:
+      DERP_PORT: ${DERP_PORT:-443}
+      DERP_ADDR: ${DERP_ADDR:-:${DERP_PORT:-443}}
+      DERP_HTTP_PORT: ${DERP_HTTP_PORT:-80}
+      DERP_HEALTHCHECK_URL: ${DERP_HEALTHCHECK_URL:-https://127.0.0.1:${DERP_PORT:-443}/generate_204}
+    ports: !override
+      - "${HOST_HTTP_PORT:-80}:${DERP_HTTP_PORT:-80}/tcp"
+      - "${HOST_DERP_TCP_PORT:-${DERP_PORT:-443}}:${DERP_PORT:-443}/tcp"
+      - "${HOST_STUN_PORT:-3478}:${DERP_STUN_PORT:-3478}/udp"
